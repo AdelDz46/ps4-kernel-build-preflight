@@ -1,0 +1,202 @@
+--- a/drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
++++ b/drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
+@@ -205,8 +205,15 @@
+ 	q->cmd->length = q->p - (u8 *)q->cmd;
+ 	q->req.length = q->p - (u8 *)&q->req;
+ 
++	DRM_INFO("ps4diag: ICC command queue prepared len=%u commands=%u\n",
++		 (unsigned int)q->req.length, (unsigned int)q->req.count);
+ 	res = apcie_icc_cmd(0x10, 0, &q->req, q->req.length,
+ 		      &q->reply, sizeof(q->reply));
++	DRM_INFO("ps4diag: ICC call returned=%d\n", res);
++	if (res >= 0)
++		DRM_INFO("ps4diag: ICC reply status=%u/%u\n",
++			 (unsigned int)q->reply.res1,
++			 (unsigned int)q->reply.res2);
+ 
+ 	if (res < 5) {
+ 		DRM_ERROR("icc i2c commandqueue failed: %d\n", res);
+@@ -304,8 +311,13 @@
+ 
+ 	/* This gets called before pre_enable/enable, so we just stash
+ 	 * the vic ID for later */
++	DRM_INFO("ps4diag: requested " DRM_MODE_FMT "\n",
++		 DRM_MODE_ARG(mode));
++	DRM_INFO("ps4diag: adjusted " DRM_MODE_FMT "\n",
++		 DRM_MODE_ARG(adjusted_mode));
+ 	mn_bridge->mode = drm_match_cea_mode(adjusted_mode);
+-	DRM_DEBUG_KMS("vic mode: %d\n", mn_bridge->mode);
++	DRM_INFO("ps4diag: adjusted mode VIC=%d (stored for later bridge use)\n",
++		 mn_bridge->mode);
+ 	if (!mn_bridge->mode) {
+ 		DRM_ERROR("attempted to set non-CEA mode\n");
+ 	}
+@@ -314,6 +326,7 @@
+ static void ps4_bridge_pre_enable(struct drm_bridge *bridge)
+ {
+ 	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
++	DRM_INFO("ps4diag: bridge pre_enable callback entered\n");
+ 	DRM_DEBUG_KMS("ps4_bridge_pre_enable\n");
+ 	DRM_DEBUG("Enable ps4_bridge_pre_enable\n");
+ 	mutex_lock(&mn_bridge->mutex);
+@@ -399,6 +412,8 @@
+ 		return;
+ 	}
+ 
++	DRM_INFO("ps4diag: bridge enable callback entered with VIC=%d;\n		 register effects below are requested through ICC, not confirmed\n",
++		 mn_bridge->mode);
+ 	DRM_DEBUG_KMS("ps4_bridge_enable (mode: %d)\n", mn_bridge->mode);
+ 
+ 	/* Here come the dragons */
+@@ -648,6 +663,7 @@
+ static void ps4_bridge_disable(struct drm_bridge *bridge)
+ {
+ 	struct ps4_bridge *mn_bridge = bridge_to_ps4_bridge(bridge);
++	DRM_INFO("ps4diag: bridge disable callback entered; mute and InfoFrame writes will be submitted through ICC\n");
+ 	DRM_DEBUG_KMS("ps4_bridge_disable\n");
+ 
+ 	mutex_lock(&mn_bridge->mutex);
+@@ -663,6 +679,7 @@
+ static void ps4_bridge_post_disable(struct drm_bridge *bridge)
+ {
+ 	/* struct ps4_bridge *mn_bridge = bridge_to_mn864729(bridge); */
++	DRM_INFO("ps4diag: bridge post_disable callback entered\n");
+ 	DRM_DEBUG_KMS("ps4_bridge_post_disable\n");
+ }
+ 
+@@ -767,14 +784,18 @@
+ 	int vic = drm_match_cea_mode(mode);
+ 
+ 	/* Allow anything that we can match up to a VIC (CEA modes) */
++	DRM_INFO("ps4diag: bridge mode validation candidate " DRM_MODE_FMT
++		 " VIC=%d\n", DRM_MODE_ARG(mode), vic);
+ 	if (!vic || (vic != 16 && vic != 4 && vic != 63)) {
+ 	// Might need to disable 63 (1920x1080-120Hz)
+ 
+ 	/*
+ 	if (!vic || (vic != 16 && vic != 4)) {
+ 	*/
++		DRM_INFO("ps4diag: bridge mode validation result=MODE_BAD VIC=%d\n", vic);
+ 		return MODE_BAD;
+ 	}
++	DRM_INFO("ps4diag: bridge mode validation result=MODE_OK VIC=%d\n", vic);
+ 	return MODE_OK;
+ }
+ 
+--- a/drivers/gpu/drm/amd/amdgpu/atombios_dp.c
++++ b/drivers/gpu/drm/amd/amdgpu/atombios_dp.c
+@@ -37,6 +37,13 @@
+ #include "amdgpu_connectors.h"
+ #include "amdgpu_atombios.h"
+ 
++#define AMDGPU_PS4_DIAG(adev, ...) \
++	do { \
++		if ((adev)->asic_type == CHIP_LIVERPOOL || \
++		    (adev)->asic_type == CHIP_GLADIUS) \
++			DRM_INFO(__VA_ARGS__); \
++	} while (0)
++
+ /* move these to drm_dp_helper.c/h */
+ #define DP_LINK_CONFIGURATION_SIZE 9
+ #define DP_DPCD_SIZE DP_RECEIVER_CAP_SIZE
+@@ -629,6 +636,9 @@
+ 			break;
+ 		}
+ 
++		AMDGPU_PS4_DIAG(dp_info->adev, "ps4diag: DP clock-recovery status=%*ph train=%*ph\n",
++			 DP_LINK_STATUS_SIZE, dp_info->link_status,
++			 dp_info->dp_lane_count, dp_info->train_set);
+ 		if (drm_dp_clock_recovery_ok(dp_info->link_status, dp_info->dp_lane_count)) {
+ 			clock_recovery = true;
+ 			break;
+@@ -694,6 +704,9 @@
+ 			break;
+ 		}
+ 
++		AMDGPU_PS4_DIAG(dp_info->adev, "ps4diag: DP channel-equalization status=%*ph train=%*ph\n",
++			 DP_LINK_STATUS_SIZE, dp_info->link_status,
++			 dp_info->dp_lane_count, dp_info->train_set);
+ 		if (drm_dp_channel_eq_ok(dp_info->link_status, dp_info->dp_lane_count)) {
+ 			channel_eq = true;
+ 			break;
+@@ -766,13 +779,25 @@
+ 	dp_info.dp_clock = dig_connector->dp_clock;
+ 	dp_info.aux = &amdgpu_connector->ddc_bus->aux;
+ 
+-	if (amdgpu_atombios_dp_link_train_init(&dp_info))
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DP training start lanes=%d link_clock_khz=%d TPS3=%d\n",
++		 dp_info.dp_lane_count, dp_info.dp_clock, dp_info.tp3_supported);
++	if (amdgpu_atombios_dp_link_train_init(&dp_info)) {
++		AMDGPU_PS4_DIAG(adev, "ps4diag: DP training init failed\n");
+ 		goto done;
+-	if (amdgpu_atombios_dp_link_train_cr(&dp_info))
++	}
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DP training init returned success; requests issued\n");
++	if (amdgpu_atombios_dp_link_train_cr(&dp_info)) {
++		AMDGPU_PS4_DIAG(adev, "ps4diag: DP clock recovery failed\n");
+ 		goto done;
+-	if (amdgpu_atombios_dp_link_train_ce(&dp_info))
++	}
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DP clock recovery passed status check\n");
++	if (amdgpu_atombios_dp_link_train_ce(&dp_info)) {
++		AMDGPU_PS4_DIAG(adev, "ps4diag: DP channel equalization failed\n");
+ 		goto done;
++	}
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DP channel equalization passed status check\n");
+ done:
+ 	if (amdgpu_atombios_dp_link_train_finish(&dp_info))
+ 		return;
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DP training finish callback returned\n");
+ }
+--- a/drivers/gpu/drm/amd/amdgpu/dce_v8_0.c
++++ b/drivers/gpu/drm/amd/amdgpu/dce_v8_0.c
+@@ -40,6 +40,13 @@
+ #include "amdgpu_display.h"
+ #include "dce_v8_0.h"
+ 
++#define AMDGPU_PS4_DIAG(adev, ...) \
++	do { \
++		if ((adev)->asic_type == CHIP_LIVERPOOL || \
++		    (adev)->asic_type == CHIP_GLADIUS) \
++			DRM_INFO(__VA_ARGS__); \
++	} while (0)
++
+ #include "dce/dce_8_0_d.h"
+ #include "dce/dce_8_0_sh_mask.h"
+ 
+@@ -2574,6 +2581,7 @@
+ {
+ 	struct amdgpu_crtc *amdgpu_crtc = to_amdgpu_crtc(crtc);
+ 	struct drm_device *dev = crtc->dev;
++	struct amdgpu_device *adev = drm_to_adev(dev);
+ 	struct drm_encoder *encoder;
+ 
+ 	/* assign the encoder to the amdgpu crtc to avoid repeated lookups later */
+@@ -2589,12 +2597,25 @@
+ 		amdgpu_crtc->connector = NULL;
+ 		return false;
+ 	}
+-	if (!amdgpu_display_crtc_scaling_mode_fixup(crtc, mode, adjusted_mode))
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DCE mode fixup requested " DRM_MODE_FMT "\n",
++		 DRM_MODE_ARG(mode));
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DCE mode fixup adjusted input " DRM_MODE_FMT "\n",
++		 DRM_MODE_ARG(adjusted_mode));
++	if (!amdgpu_display_crtc_scaling_mode_fixup(crtc, mode, adjusted_mode)) {
++		AMDGPU_PS4_DIAG(adev, "ps4diag: DCE scaling mode fixup failed\n");
+ 		return false;
+-	if (amdgpu_atombios_crtc_prepare_pll(crtc, adjusted_mode))
++	}
++	AMDGPU_PS4_DIAG(adev, "ps4diag: DCE adjusted after scaling " DRM_MODE_FMT "\n",
++		 DRM_MODE_ARG(adjusted_mode));
++	if (amdgpu_atombios_crtc_prepare_pll(crtc, adjusted_mode)) {
++		AMDGPU_PS4_DIAG(adev, "ps4diag: AtomBIOS PLL preparation failed\n");
+ 		return false;
++	}
++	AMDGPU_PS4_DIAG(adev, "ps4diag: PLL preparation returned adjusted_clock=%u kHz\n",
++		 amdgpu_crtc->adjusted_clock);
+ 	/* pick pll */
+ 	amdgpu_crtc->pll_id = dce_v8_0_pick_pll(crtc);
++	AMDGPU_PS4_DIAG(adev, "ps4diag: PLL selection result=%d\n", amdgpu_crtc->pll_id);
+ 	/* if we can't get a PPLL for a non-DP encoder, fail */
+ 	if ((amdgpu_crtc->pll_id == ATOM_PPLL_INVALID) &&
+ 	    !ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(amdgpu_crtc->encoder)))

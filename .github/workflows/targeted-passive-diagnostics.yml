@@ -1,0 +1,405 @@
+name: Targeted Passive Diagnostics Bitcode Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-targeted-bitcode:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout staging repository
+        uses: actions/checkout@v4
+
+      - name: Inspect build environment and resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== System Architecture ==="
+          uname -m
+          uname -r
+
+          echo "=== CPU Hardware ==="
+          nproc
+          lscpu | grep -E "Model name|Architecture|CPU\(s\):|Thread\(s\) per core|Core\(s\) per socket" || true
+
+          echo "=== Memory and Swap ==="
+          free -h
+
+          echo "=== Filesystem Capacity ==="
+          df -hT /
+          df -hT "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+
+      - name: Verify adequate root disk capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Require at least 15 GiB free disk space (15 * 1024 * 1024 = 15728640 KiB)
+          AVAIL_KIB=$(df -k --output=avail / | tail -n 1 | tr -d ' ')
+          REQUIRED_KIB=15728640
+
+          echo "Available disk on /: ${AVAIL_KIB} KiB"
+          echo "Required disk on /:  ${REQUIRED_KIB} KiB"
+
+          if [ "$AVAIL_KIB" -lt "$REQUIRED_KIB" ]; then
+            echo "::error::Insufficient disk space on root filesystem (${AVAIL_KIB} KiB available < ${REQUIRED_KIB} KiB required)."
+            exit 1
+          fi
+          echo "Adequate disk space verified."
+
+      - name: Install required host build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Updating package index..."
+          sudo apt-get update -y
+
+          echo "Installing host dependencies..."
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            build-essential \
+            libelf-dev \
+            libssl-dev \
+            libzstd-dev \
+            zlib1g-dev \
+            bison \
+            flex \
+            pkg-config \
+            file \
+            curl \
+            xz-utils \
+            git
+
+          echo "Verifying bc availability..."
+          which bc
+          bc --version | head -n 1
+
+      - name: Download, verify, and unpack LLVM 19.1.7 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LLVM_URL="https://mirrors.edge.kernel.org/pub/tools/llvm/files/llvm-19.1.7-x86_64.tar.xz"
+          EXPECTED_SHA256="c9f2cd6997bc17fdd241a3594d77ba22d9f4921ef69ac1e14ad86fd6522f18bb"
+          TOOLCHAIN_DIR="${RUNNER_TEMP}/toolchain"
+
+          mkdir -p "$TOOLCHAIN_DIR"
+          cd "$TOOLCHAIN_DIR"
+
+          echo "Downloading LLVM 19.1.7 from ${LLVM_URL}..."
+          curl -fsSL --retry 3 --retry-delay 5 -o llvm-19.1.7-x86_64.tar.xz "$LLVM_URL"
+
+          echo "Verifying SHA-256 checksum..."
+          ACTUAL_SHA256=$(sha256sum llvm-19.1.7-x86_64.tar.xz | awk '{print $1}')
+          echo "Expected: ${EXPECTED_SHA256}"
+          echo "Actual:   ${ACTUAL_SHA256}"
+
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "::error::LLVM archive checksum mismatch! Halting immediately without substituting any other toolchain."
+            exit 1
+          fi
+
+          echo "Extracting LLVM 19.1.7 archive..."
+          tar -xJf llvm-19.1.7-x86_64.tar.xz
+
+          LLVM_BIN="${TOOLCHAIN_DIR}/llvm-19.1.7-x86_64/bin"
+          if [ ! -d "$LLVM_BIN" ]; then
+            echo "::error::Expected bin directory ${LLVM_BIN} not found after extraction."
+            exit 1
+          fi
+
+          echo "Checking required LLVM tool binaries..."
+          for tool in clang clang++ ld.lld lld llvm-ar llvm-nm llvm-objcopy llvm-strip llvm-readelf llvm-objdump; do
+            tool_path="${LLVM_BIN}/${tool}"
+            if [ ! -e "$tool_path" ]; then
+              echo "::error::Missing required tool: ${tool_path}"
+              exit 1
+            fi
+            echo "  Found ${tool} at ${tool_path}"
+          done
+
+          echo "Verifying Clang version banner..."
+          CLANG_VER=$("${LLVM_BIN}/clang" --version)
+          echo "$CLANG_VER"
+          if [[ "$CLANG_VER" != *"ClangBuiltLinux"* ]] || [[ "$CLANG_VER" != *"19.1.7"* ]] || [[ "$CLANG_VER" != *"cd708029e0b2869e80abe31ddb175f7c35361f90"* ]]; then
+            echo "::error::Clang banner did not match expected ClangBuiltLinux 19.1.7 commit cd708029e0b2869e80abe31ddb175f7c35361f90."
+            exit 1
+          fi
+
+          echo "Verifying LLD version banner..."
+          LLD_VER=$("${LLVM_BIN}/ld.lld" --version)
+          echo "$LLD_VER"
+          if [[ "$LLD_VER" != *"19.1.7"* ]]; then
+            echo "::error::LLD banner did not match expected LLD version 19.1.7."
+            exit 1
+          fi
+
+          echo "LLVM_BIN=${LLVM_BIN}" >> "$GITHUB_ENV"
+
+      - name: Clone kernel source and checkout baseline commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SRC_REPO="https://github.com/crashniels/linux.git"
+          EXPECTED_COMMIT="22a65a956e3421b55ad3451f58c053c6467f729f"
+          SRC_DIR="${RUNNER_TEMP}/linux-src"
+
+          echo "Initializing source directory and fetching exact commit ${EXPECTED_COMMIT}..."
+          mkdir -p "$SRC_DIR"
+          cd "$SRC_DIR"
+          git init
+          git remote add origin "$SRC_REPO"
+
+          if ! git fetch --depth 1 origin "$EXPECTED_COMMIT"; then
+            echo "::error::Failed to fetch exact commit ${EXPECTED_COMMIT} from ${SRC_REPO}."
+            exit 1
+          fi
+
+          echo "Checking out baseline commit ${EXPECTED_COMMIT} in detached HEAD mode..."
+          git checkout --detach "$EXPECTED_COMMIT"
+
+          ACTUAL_COMMIT=$(git rev-parse HEAD)
+          echo "Expected HEAD: ${EXPECTED_COMMIT}"
+          echo "Actual HEAD:   ${ACTUAL_COMMIT}"
+
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "::error::Source commit mismatch! Expected ${EXPECTED_COMMIT}, got ${ACTUAL_COMMIT}."
+            exit 1
+          fi
+
+          git status --short
+          echo "SRC_DIR=${SRC_DIR}" >> "$GITHUB_ENV"
+
+      - name: Verify and apply passive diagnostics patch 0001
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_FILE="${GITHUB_WORKSPACE}/build-inputs/0001-ps4-display-passive-diagnostics.patch"
+          EXPECTED_PATCH_SHA256="5daf621192e3ecfe87c2d742a0d2434973e55296295a68aac1dd75403bfb6477"
+
+          echo "Verifying patch checksum..."
+          ACTUAL_PATCH_SHA256=$(sha256sum "$PATCH_FILE" | awk '{print $1}')
+          echo "Expected patch SHA-256: ${EXPECTED_PATCH_SHA256}"
+          echo "Actual patch SHA-256:   ${ACTUAL_PATCH_SHA256}"
+
+          if [ "$ACTUAL_PATCH_SHA256" != "$EXPECTED_PATCH_SHA256" ]; then
+            echo "::error::Patch checksum mismatch! Halting immediately."
+            exit 1
+          fi
+
+          cd "$SRC_DIR"
+          echo "Running git apply --check..."
+          git apply --check "$PATCH_FILE"
+
+          echo "Applying patch 0001..."
+          git apply "$PATCH_FILE"
+
+          echo "Verifying modified files..."
+          git diff --stat
+          MODIFIED_FILES=$(git diff --name-only)
+          echo "Modified files:"
+          echo "$MODIFIED_FILES"
+
+          EXPECTED_FILES=$(cat <<'EOF'
+drivers/gpu/drm/amd/amdgpu/atombios_dp.c
+drivers/gpu/drm/amd/amdgpu/dce_v8_0.c
+drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
+EOF
+)
+
+          if [ "$MODIFIED_FILES" != "$EXPECTED_FILES" ]; then
+            echo "::error::Unexpected modified files list after patch application!"
+            exit 1
+          fi
+
+      - name: Prepare out-of-tree build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_INPUT="${GITHUB_WORKSPACE}/build-inputs/saved-kernel.config"
+          EXPECTED_CONFIG_SHA256="be4668eb3059eac23a86569cd6fbbf467da54ef9a6cf9c60f19677f0f63b31c0"
+          BUILD_DIR="${RUNNER_TEMP}/build"
+
+          echo "Verifying saved-kernel.config checksum..."
+          ACTUAL_CONFIG_SHA256=$(sha256sum "$CONFIG_INPUT" | awk '{print $1}')
+          echo "Expected config SHA-256: ${EXPECTED_CONFIG_SHA256}"
+          echo "Actual config SHA-256:   ${ACTUAL_CONFIG_SHA256}"
+
+          if [ "$ACTUAL_CONFIG_SHA256" != "$EXPECTED_CONFIG_SHA256" ]; then
+            echo "::error::Saved kernel config checksum mismatch! Halting immediately."
+            exit 1
+          fi
+
+          mkdir -p "$BUILD_DIR"
+          cp "$CONFIG_INPUT" "${BUILD_DIR}/.config"
+
+          echo "Running make olddefconfig..."
+          make -C "$SRC_DIR" O="$BUILD_DIR" ARCH=x86_64 LLVM="${LLVM_BIN}/" LLVM_IAS=1 olddefconfig
+
+          echo "=== Printing resolved critical configuration symbols ==="
+          REQUIRED_SYMBOLS=(
+            CONFIG_LTO_CLANG_FULL
+            CONFIG_CC_IS_CLANG
+            CONFIG_LD_IS_LLD
+            CONFIG_X86_PS4
+            CONFIG_DRM_AMDGPU
+            CONFIG_DRM_AMDGPU_CIK
+          )
+
+          for sym in "${REQUIRED_SYMBOLS[@]}"; do
+            match=$(grep "^${sym}=" "${BUILD_DIR}/.config" || true)
+            echo "  ${sym}: ${match:-NOT SET}"
+            if [ -z "$match" ]; then
+              echo "::error::Required symbol ${sym} is not enabled in resolved .config"
+              exit 1
+            fi
+          done
+
+          echo "Normalized .config SHA-256:"
+          sha256sum "${BUILD_DIR}/.config"
+
+          echo "BUILD_DIR=${BUILD_DIR}" >> "$GITHUB_ENV"
+
+      - name: Compile targeted three bitcode objects
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_OBJECTS=(
+            drivers/gpu/drm/amd/amdgpu/ps4_bridge.o
+            drivers/gpu/drm/amd/amdgpu/atombios_dp.o
+            drivers/gpu/drm/amd/amdgpu/dce_v8_0.o
+          )
+
+          echo "=== Starting targeted compilation of 3 objects ==="
+          echo "Parallelism: -j2"
+          echo "Targets: ${TARGET_OBJECTS[*]}"
+
+          BUILD_LOG="${RUNNER_TEMP}/compilation.log"
+
+          # Execute targeted make and capture full output
+          set +e
+          make -C "$SRC_DIR" O="$BUILD_DIR" ARCH=x86_64 LLVM="${LLVM_BIN}/" LLVM_IAS=1 -j2 "${TARGET_OBJECTS[@]}" 2>&1 | tee "$BUILD_LOG"
+          BUILD_EXIT="${PIPESTATUS[0]}"
+          set -e
+
+          echo "Target compilation exited with code: ${BUILD_EXIT}"
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "::error::Targeted object compilation failed with exit code ${BUILD_EXIT}."
+            exit 1
+          fi
+
+          echo "BUILD_LOG=${BUILD_LOG}" >> "$GITHUB_ENV"
+
+      - name: Validate generated bitcode objects and format
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_OBJECTS=(
+            drivers/gpu/drm/amd/amdgpu/ps4_bridge.o
+            drivers/gpu/drm/amd/amdgpu/atombios_dp.o
+            drivers/gpu/drm/amd/amdgpu/dce_v8_0.o
+          )
+
+          SUMMARY_FILE="${RUNNER_TEMP}/build-summary.txt"
+          {
+            echo "============================================================"
+            echo "PS4 Pro 1080p144: Targeted Passive Diagnostics Build Summary"
+            echo "============================================================"
+            echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo
+            echo "=== Compiler Identity ==="
+            "${LLVM_BIN}/clang" --version
+            echo
+            echo "=== LLD Identity ==="
+            "${LLVM_BIN}/ld.lld" --version
+            echo
+            echo "=== Target Objects Verification ==="
+          } > "$SUMMARY_FILE"
+
+          for obj in "${TARGET_OBJECTS[@]}"; do
+            obj_path="${BUILD_DIR}/${obj}"
+            if [ ! -f "$obj_path" ]; then
+              echo "::error::Target object file ${obj_path} was not created!"
+              exit 1
+            fi
+
+            file_size=$(stat -c%s "$obj_path")
+            file_sha=$(sha256sum "$obj_path" | awk '{print $1}')
+            file_type=$(file -b "$obj_path")
+
+            echo "Object: ${obj}"
+            echo "  Path: ${obj_path}"
+            echo "  Size: ${file_size} bytes"
+            echo "  SHA-256: ${file_sha}"
+            echo "  File Type: ${file_type}"
+
+            # Confirm LLVM IR bitcode format
+            if [[ "$file_type" != *"LLVM IR bitcode"* ]]; then
+              echo "::error::Target object ${obj} is NOT valid LLVM IR bitcode (detected: ${file_type})."
+              exit 1
+            fi
+
+            {
+              echo "Target: ${obj}"
+              echo "  Size: ${file_size} bytes"
+              echo "  SHA-256: ${file_sha}"
+              echo "  Type: ${file_type}"
+              echo "  Symbols preview:"
+              "${LLVM_BIN}/llvm-nm" "$obj_path" | sed -n '1,15p'
+              echo
+            } >> "$SUMMARY_FILE"
+          done
+
+          cat "$SUMMARY_FILE"
+          echo "SUMMARY_FILE=${SUMMARY_FILE}" >> "$GITHUB_ENV"
+
+      - name: Stage and preserve workflow artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_DIR="${RUNNER_TEMP}/artifacts"
+          mkdir -p "${ARTIFACT_DIR}/objects" "${ARTIFACT_DIR}/cmd-records" "${ARTIFACT_DIR}/logs"
+
+          # Copy target bitcode objects
+          cp "${BUILD_DIR}/drivers/gpu/drm/amd/amdgpu/ps4_bridge.o" "${ARTIFACT_DIR}/objects/"
+          cp "${BUILD_DIR}/drivers/gpu/drm/amd/amdgpu/atombios_dp.o" "${ARTIFACT_DIR}/objects/"
+          cp "${BUILD_DIR}/drivers/gpu/drm/amd/amdgpu/dce_v8_0.o" "${ARTIFACT_DIR}/objects/"
+
+          # Copy generated Kbuild command files if present
+          for cmd_file in .ps4_bridge.o.cmd .atombios_dp.o.cmd .dce_v8_0.o.cmd; do
+            src="${BUILD_DIR}/drivers/gpu/drm/amd/amdgpu/${cmd_file}"
+            if [ -f "$src" ]; then
+              cp "$src" "${ARTIFACT_DIR}/cmd-records/"
+            fi
+          done
+
+          # Copy diagnostic logs and configuration
+          cp "$BUILD_LOG" "${ARTIFACT_DIR}/logs/compilation.log"
+          cp "$SUMMARY_FILE" "${ARTIFACT_DIR}/logs/build-summary.txt"
+          cp "${BUILD_DIR}/.config" "${ARTIFACT_DIR}/logs/resolved.config"
+
+          echo "Artifact directory contents:"
+          find "${ARTIFACT_DIR}" -type f -exec ls -lh {} +
+
+          echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> "$GITHUB_ENV"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps4-passive-diagnostics-bitcode
+          path: ${{ runner.temp }}/artifacts
+          if-no-files-found: error
+          retention-days: 14

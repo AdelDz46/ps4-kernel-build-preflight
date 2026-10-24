@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout staging repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Inspect build environment and resources
         shell: bash
@@ -392,7 +392,7 @@ jobs:
           echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> "$GITHUB_ENV"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ps4-passive-diagnostics-bitcode
           path: ${{ runner.temp }}/artifacts

@@ -131,15 +131,32 @@ jobs:
           cd "${RUNNER_TEMP}/linux-src"
           mkdir -p "${RUNNER_TEMP}/build"
           cp "${RUNNER_TEMP}/saved-kernel.config" "${RUNNER_TEMP}/build/.config"
-          # CI-only firmware adjustment: remove unavailable mrvl/sd8897_uapsta.bin from built-in firmware
-          # Saved config has absolute extra_firmware dir from another machine; only sd8897_uapsta.bin missing
-          if grep -q 'CONFIG_EXTRA_FIRMWARE=.*mrvl/sd8897_uapsta.bin' "${RUNNER_TEMP}/build/.config"; then
-            echo "CI firmware adjustment: removing mrvl/sd8897_uapsta.bin from CONFIG_EXTRA_FIRMWARE" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
-            sed -i 's|mrvl/sd8897_uapsta.bin ||g; s| mrvl/sd8897_uapsta.bin||g; s|mrvl/sd8897_uapsta.bin||g' "${RUNNER_TEMP}/build/.config"
-            # Point extra firmware dir to a safe empty dir to avoid absolute path issues
-            sed -i 's|^CONFIG_EXTRA_FIRMWARE_DIR=.*|CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"|' "${RUNNER_TEMP}/build/.config"
+          # CI-only firmware adjustment: filter built-in firmware entries against available files
+          # Saved config has absolute extra_firmware dir from another machine; remove only missing entries
+          FW_DIR="/lib/firmware"
+          sed -i "s|^CONFIG_EXTRA_FIRMWARE_DIR=.*|CONFIG_EXTRA_FIRMWARE_DIR=\"$FW_DIR\"|" "${RUNNER_TEMP}/build/.config"
+          FW_LIST=$(grep '^CONFIG_EXTRA_FIRMWARE=' "${RUNNER_TEMP}/build/.config" | sed -n 's/^CONFIG_EXTRA_FIRMWARE="\(.*\)"/\1/p')
+          if [ -n "$FW_LIST" ]; then
+            echo "CI firmware scan: checking entries in $FW_DIR" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+            NEW_FW=""
+            for f in $FW_LIST; do
+              if [ -f "$FW_DIR/$f" ]; then
+                echo "CI firmware: FOUND $f" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+                NEW_FW="$NEW_FW $f"
+              else
+                echo "CI firmware: MISSING $f (removing from built-in list for diagnostic build)" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+              fi
+            done
+            NEW_FW=$(echo "$NEW_FW" | sed 's/^ //')
+            if [ -z "$NEW_FW" ]; then
+              sed -i 's|^CONFIG_EXTRA_FIRMWARE=.*|CONFIG_EXTRA_FIRMWARE=""|' "${RUNNER_TEMP}/build/.config"
+              echo "CI firmware: all entries missing; CONFIG_EXTRA_FIRMWARE set to empty (diagnostic build)" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+            else
+              sed -i "s|^CONFIG_EXTRA_FIRMWARE=.*|CONFIG_EXTRA_FIRMWARE=\"$NEW_FW\"|" "${RUNNER_TEMP}/build/.config"
+            fi
             grep '^CONFIG_EXTRA_FIRMWARE=' "${RUNNER_TEMP}/build/.config" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
             grep '^CONFIG_EXTRA_FIRMWARE_DIR=' "${RUNNER_TEMP}/build/.config" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+            echo "NOTE: This is a compile-only diagnostic kernel build. Built-in firmware removed if unavailable; resulting kernel may omit firmware required for some Wi-Fi/Bluetooth devices and may not be suitable for daily use." | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
           fi
           make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 olddefconfig 2>&1 | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
           grep -E '^(CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_FULL|CONFIG_PS4|CONFIG_DRM_AMDGPU|CONFIG_RUST|CONFIG_CC_VERSION|CONFIG_PAHOLE|CONFIG_DEBUG_INFO)' "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" || true

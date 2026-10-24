@@ -209,12 +209,7 @@ jobs:
           echo "Modified files:"
           echo "$MODIFIED_FILES"
 
-          EXPECTED_FILES=$(cat <<'EOF'
-drivers/gpu/drm/amd/amdgpu/atombios_dp.c
-drivers/gpu/drm/amd/amdgpu/dce_v8_0.c
-drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
-EOF
-)
+          EXPECTED_FILES=$'drivers/gpu/drm/amd/amdgpu/atombios_dp.c\ndrivers/gpu/drm/amd/amdgpu/dce_v8_0.c\ndrivers/gpu/drm/amd/amdgpu/ps4_bridge.c'
 
           if [ "$MODIFIED_FILES" != "$EXPECTED_FILES" ]; then
             echo "::error::Unexpected modified files list after patch application!"

@@ -131,8 +131,19 @@ jobs:
           cd "${RUNNER_TEMP}/linux-src"
           mkdir -p "${RUNNER_TEMP}/build"
           cp "${RUNNER_TEMP}/saved-kernel.config" "${RUNNER_TEMP}/build/.config"
-          make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 olddefconfig 2>&1 | tee "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+          # CI-only firmware adjustment: remove unavailable mrvl/sd8897_uapsta.bin from built-in firmware
+          # Saved config has absolute extra_firmware dir from another machine; only sd8897_uapsta.bin missing
+          if grep -q 'CONFIG_EXTRA_FIRMWARE=.*mrvl/sd8897_uapsta.bin' "${RUNNER_TEMP}/build/.config"; then
+            echo "CI firmware adjustment: removing mrvl/sd8897_uapsta.bin from CONFIG_EXTRA_FIRMWARE" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+            sed -i 's|mrvl/sd8897_uapsta.bin ||g; s| mrvl/sd8897_uapsta.bin||g; s|mrvl/sd8897_uapsta.bin||g' "${RUNNER_TEMP}/build/.config"
+            # Point extra firmware dir to a safe empty dir to avoid absolute path issues
+            sed -i 's|^CONFIG_EXTRA_FIRMWARE_DIR=.*|CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"|' "${RUNNER_TEMP}/build/.config"
+            grep '^CONFIG_EXTRA_FIRMWARE=' "${RUNNER_TEMP}/build/.config" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+            grep '^CONFIG_EXTRA_FIRMWARE_DIR=' "${RUNNER_TEMP}/build/.config" | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+          fi
+          make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 olddefconfig 2>&1 | tee -a "${RUNNER_TEMP}/artifacts/olddefconfig.log"
           grep -E '^(CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_FULL|CONFIG_PS4|CONFIG_DRM_AMDGPU|CONFIG_RUST|CONFIG_CC_VERSION|CONFIG_PAHOLE|CONFIG_DEBUG_INFO)' "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" || true
+          grep -E '^CONFIG_EXTRA_FIRMWARE' "${RUNNER_TEMP}/build/.config" | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" || true
           sha256sum "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt"
           cp "${RUNNER_TEMP}/build/.config" "${RUNNER_TEMP}/artifacts/resolved.config"
           if grep -q '^CONFIG_RUST=y' "${RUNNER_TEMP}/build/.config"; then

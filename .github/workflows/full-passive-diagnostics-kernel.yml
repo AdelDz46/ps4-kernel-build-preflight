@@ -20,7 +20,6 @@ jobs:
       CONFIG_SHA256: be4668eb3059eac23a86569cd6fbbf467da54ef9a6cf9c60f19677f0f63b31c0
       JOBS: 2
     steps:
-      # NOTE: Full requirements are captured in this workflow for review. Commit/push not performed.
       - name: Checkout preflight repo
         uses: actions/checkout@v7
         with:
@@ -34,9 +33,8 @@ jobs:
           uname -a | tee "${RUNNER_TEMP}/artifacts/system-uname.txt"
           lscpu | tee "${RUNNER_TEMP}/artifacts/system-lscpu.txt"
           free -h | tee "${RUNNER_TEMP}/artifacts/system-free.txt"
-          swapon --show || true | tee "${RUNNER_TEMP}/artifacts/system-swap.txt"
+          swapon --show | tee "${RUNNER_TEMP}/artifacts/system-swap.txt" || true
           df -h | tee "${RUNNER_TEMP}/artifacts/system-df.txt"
-          df -B1 / | awk 'NR==2{printf "ROOT_FREE_BYTES=%s\n", $4}' | tee "${RUNNER_TEMP}/artifacts/root-free-bytes.txt"
           FREE_BYTES=$(df -B1 / | awk 'NR==2{print $4}')
           MIN_BYTES=$((30*1024*1024*1024))
           echo "Free bytes: $FREE_BYTES (need >= $MIN_BYTES)"
@@ -85,224 +83,132 @@ jobs:
           git checkout --detach FETCH_HEAD
           ACTUAL_SHA=$(git rev-parse HEAD)
           echo "ACTUAL_SHA=$ACTUAL_SHA" | tee "${RUNNER_TEMP}/artifacts/source-commit.txt"
-          if [ "$ACTUAL_SHA" != "$BASELINE_COMMIT ];# PR Title
-diff --git a/.github/workflows/full-passive-diagnostics-kernel.yml b/.github/workflows/full-passive-diagnostics-kernel.yml
-new file mode 100644
-index 0000000..8cde020
---- /dev/null
-+++ b/.github/workflows/full-passive-diagnostics-kernel.yml
-@@ -0,0 +1,267 @@
-+name: full-passive-diagnostics-kernel
-+
-+on:
-+  workflow_dispatch:
-+
-+permissions:
-+  contents: read
-+
-+jobs:
-+  build-bzimage:
-+    runs-on: ubuntu-24.04
-+    timeout-minutes: 360
-+    env:
-+      KERNEL_REPO: https://github.com/crashniels/linux.git
-+      BASELINE_COMMIT: 22a65a956e3421b55ad3451f58c053c6467f729f
-+      LLVM_VERSION: 19.1.7
-+      LLVM_ARCHIVE_SHA256: c9f2cd6997bc17fdd241a3594d77ba22d9f4921ef69ac1e14ad86fd6522f18bb
-+      LLVM_BASE_URL: https://mirrors.kernel.org/pub/tools/llvm/files
-+      PATCH_SHA256: 5daf621192e3ecfe87c2d742a0d2434973e55296295a68aac1dd75403bfb6477
-+      CONFIG_SHA256: be4668eb3059eac23a86569cd6fbbf467da54ef9a6cf9c60f19677f0f63b31c0
-+      JOBS: 2
-+    steps:
-+      - name: Checkout preflight repo
-+        uses: actions/checkout@v7
-+        with:
-+          fetch-depth: 1
-+
-+      - name: Record system info
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          mkdir -p "${RUNNER_TEMP}/artifacts"
-+          uname -a | tee "${RUNNER_TEMP}/artifacts/system-uname.txt"
-+          lscpu | tee "${RUNNER_TEMP}/artifacts/system-lscpu.txt"
-+          free -h | tee "${RUNNER_TEMP}/artifacts/system-free.txt"
-+          swapon --show || true | tee "${RUNNER_TEMP}/artifacts/system-swap.txt"
-+          df -h | tee "${RUNNER_TEMP}/artifacts/system-df.txt"
-+          FREE_BYTES=$(df -B1 / | awk 'NR==2{print $4}')
-+          MIN_BYTES=$((30*1024*1024*1024))
-+          echo "Free bytes: $FREE_BYTES (need >= $MIN_BYTES)"
-+          if [ "$FREE_BYTES" -lt "$MIN_BYTES" ]; then
-+            echo "ERROR: insufficient disk space (< 30 GiB)" >&2
-+            exit 1
-+          fi
-+
-+      - name: Install build dependencies
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          sudo apt-get update
-+          sudo apt-get install -y --no-install-recommends \
-+            build-essential git wget curl ca-certificates \
-+            bc bison flex libssl-dev libelf-dev \
-+            xz-utils zstd \
-+            pahole rsync
-+
-+      - name: Download and verify LLVM 19.1.7
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          cd "${RUNNER_TEMP}"
-+          LLVM_TAR="clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-+          LLVM_URL="${LLVM_BASE_URL}/${LLVM_TAR}"
-+          wget -O "$LLVM_TAR" "$LLVM_URL"
-+          echo "${LLVM_ARCHIVE_SHA256}  ${LLVM_TAR}" | sha256sum -c -
-+          mkdir -p "${RUNNER_TEMP}/llvm"
-+          tar -xJf "$LLVM_TAR" -C "${RUNNER_TEMP}/llvm"
-+          LLVM_DIR="$(find "${RUNNER_TEMP}/llvm" -maxdepth 1 -type d -name 'clang+llvm-19.1.7*' | head -n1)"
-+          echo "LLVM_DIR=$LLVM_DIR" >> "$GITHUB_ENV"
-+          echo "PATH=$LLVM_DIR/bin:$PATH" >> "$GITHUB_ENV"
-+          "$LLVM_DIR/bin/clang" --version | tee "${RUNNER_TEMP}/artifacts/llvm-clang-version.txt"
-+          "$LLVM_DIR/bin/ld.lld" --version | tee "${RUNNER_TEMP}/artifacts/llvm-lld-version.txt"
-+
-+      - name: Initialize source and fetch exact baseline
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          mkdir -p "${RUNNER_TEMP}/linux-src"
-+          cd "${RUNNER_TEMP}/linux-src"
-+          git init
-+          git remote add origin "$KERNEL_REPO"
-+          git fetch --depth 1 origin "$BASELINE_COMMIT"
-+          git checkout --detach FETCH_HEAD
-+          ACTUAL_SHA=$(git rev-parse HEAD)
-+          echo "$ACTUAL_SHA" | tee "${RUNNER_TEMP}/artifacts/source-commit.txt"
-+          if [ "$ACTUAL_SHA" != "$BASELINE_COMMIT" ]; then
-+            echo "ERROR: baseline commit mismatch" >&2
-+            exit 1
-+          fi
-+
-+      - name: Verify build inputs
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          PATCH="build-inputs/0001-ps4-display-passive-diagnostics.patch"
-+          CONFIG="build-inputs/saved-kernel.config"
-+          echo "${PATCH_SHA256}  ${PATCH}" | sha256sum -c -
-+          echo "${CONFIG_SHA256}  ${CONFIG}" | sha256sum -c -
-+          cp "$PATCH" "${RUNNER_TEMP}/0001-ps4-display-passive-diagnostics.patch"
-+          cp "$CONFIG" "${RUNNER_TEMP}/saved-kernel.config"
-+
-+      - name: Apply patch 0001 only
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          cd "${RUNNER_TEMP}/linux-src"
-+          git apply --check "${RUNNER_TEMP}/0001-ps4-display-passive-diagnostics.patch"
-+          git apply "${RUNNER_TEMP}/0001-ps4-display-passive-diagnostics.patch"
-+          CHANGED=$(git diff --name-only)
-+          echo "$CHANGED" | tee "${RUNNER_TEMP}/artifacts/patch-changed-files.txt"
-+          EXPECTED=$'drivers/gpu/drm/amd/amdgpu/atombios_dp.c\ndrivers/gpu/drm/amd/amdgpu/dce_v8_0.c\ndrivers/gpu/drm/amd/amdgpu/ps4_bridge.c'
-+          if [ "$CHANGED" != "$EXPECTED" ]; then
-+            echo "ERROR: changed files do not match expected set" >&2
-+            exit 1
-+          fi
-+
-+      - name: Configure kernel
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          cd "${RUNNER_TEMP}/linux-src"
-+          mkdir -p "${RUNNER_TEMP}/build"
-+          cp "${RUNNER_TEMP}/saved-kernel.config" "${RUNNER_TEMP}/build/.config"
-+          make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 olddefconfig 2>&1 | tee "${RUNNER_TEMP}/artifacts/olddefconfig.log"
-+          grep -E '^(CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_FULL|CONFIG_PS4|CONFIG_DRM_AMDGPU|CONFIG_RUST|CONFIG_CC_VERSION|CONFIG_PAHOLE|CONFIG_DEBUG_INFO)' "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" || true
-+          sha256sum "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt"
-+          cp "${RUNNER_TEMP}/build/.config" "${RUNNER_TEMP}/artifacts/resolved.config"
-+          if grep -q '^CONFIG_RUST=y' "${RUNNER_TEMP}/build/.config"; then
-+            echo "CONFIG_RUST=y detected; checking host tools..." | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt"
-+            if ! command -v rustc >/dev/null 2>&1; then
-+              echo "ERROR: CONFIG_RUST=y but rustc not found in PATH" >&2
-+              exit 1
-+            fi
-+            rustc --version | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt"
-+            if ! command -v bindgen >/dev/null 2>&1; then
-+              echo "ERROR: CONFIG_RUST=y but bindgen not found in PATH" >&2
-+              exit 1
-+            fi
-+            bindgen --version | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt"
-+          fi
-+
-+      - name: Build bzImage
-+        shell: bash
-+        run: |
-+          set -euo pipefail
-+          cd "${RUNNER_TEMP}/linux-src"
-+          make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 CC="${LLVM_DIR}/bin/clang" LD="${LLVM_DIR}/bin/ld.lld" AR="${LLVM_DIR}/bin/llvm-ar" NM="${LLVM_DIR}/bin/llvm-nm" OBJCOPY="${LLVM_DIR}/bin/llvm-objcopy" OBJDUMP="${LLVM_DIR}/bin/llvm-objdump" STRIP="${LLVM_DIR}/bin/llvm-strip" LLVM=1 LLVM_IAS=1 -j${JOBS} bzImage 2>&1 | tee "${RUNNER_TEMP}/artifacts/build.log"
-+          BUILD="${RUNNER_TEMP}/build"
-+          IMAGE="$BUILD/arch/x86/boot/bzImage"
-+          if [[ ! -s "$IMAGE" ]]; then
-+            echo "::error::Kernel image is missing or empty: $IMAGE"
-+            exit 1
-+          fi
-+          echo "Validated bzImage: $(stat -c '%s' "$IMAGE") bytes"
-+
-+      - name: Collect artifacts
-+        if: ${{ always() }}
-+        shell: bash
-+        run: |
-+          set +e
-+          mkdir -p "${RUNNER_TEMP}/artifacts/out"
-+          BUILD="${RUNNER_TEMP}/build"
-+          SRC="${RUNNER_TEMP}/linux-src"
-+          if [ -f "$BUILD/arch/x86/boot/bzImage" ]; then
-+            cp "$BUILD/arch/x86/boot/bzImage" "${RUNNER_TEMP}/artifacts/out/" || true
-+            sha256sum "$BUILD/arch/x86/boot/bzImage" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/bzImage.sha256.txt" || true
-+            ls -lh "$BUILD/arch/x86/boot/bzImage" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/bzImage.size.txt" || true
-+          else
-+            echo "INFO: bzImage not found (build may have failed)" | tee "${RUNNER_TEMP}/artifacts/out/bzImage.missing.txt" || true
-+          fi
-+          if [ -f "$BUILD/vmlinux" ]; then
-+            cp "$BUILD/vmlinux" "${RUNNER_TEMP}/artifacts/out/" || true
-+            sha256sum "$BUILD/vmlinux" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/vmlinux.sha256.txt" || true
-+            ls -lh "$BUILD/vmlinux" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/vmlinux.size.txt" || true
-+          fi
-+          if [ -f "$BUILD/System.map" ]; then
-+            cp "$BUILD/System.map" "${RUNNER_TEMP}/artifacts/out/" || true
-+          fi
-+          cp "${RUNNER_TEMP}/artifacts/resolved.config" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/build.log" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/olddefconfig.log" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/system-*" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/llvm-*" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/source-commit.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/patch-changed-files.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          cp "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
-+          {
-+            echo "=== Summary ==="
-+            echo "Source repo: $KERNEL_REPO"
-+            echo "Baseline commit: $BASELINE_COMMIT"
-+            echo "Patch: build-inputs/0001-ps4-display-passive-diagnostics.patch (sha256: $PATCH_SHA256)"
-+            echo "Config: build-inputs/saved-kernel.config (sha256: $CONFIG_SHA256)"
-+            echo "LLVM: $LLVM_VERSION (archive sha256: $LLVM_ARCHIVE_SHA256)"
-+            echo "Compiler:"
-+            cat "${RUNNER_TEMP}/artifacts/llvm-clang-version.txt" 2>/dev/null || echo "(not available)"
-+            cat "${RUNNER_TEMP}/artifacts/llvm-lld-version.txt" 2>/dev/null || echo "(not available)"
-+            echo "kernelrelease:"
-+            (cd "$BUILD" 2>/dev/null && make kernelrelease 2>/dev/null) || echo "(not available)"
-+            echo "Resolved .config sha256:"
-+            cat "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt" 2>/dev/null || echo "(not available)"
-+            echo "bzImage status:"
-+            if [ -f "${RUNNER_TEMP}/artifacts/out/bzImage" ]; then echo "present"; else echo "missing"; fi
-+            echo "vmlinux status:"
-+            if [ -f "${RUNNER_TEMP}/artifacts/out/vmlinux" ]; then echo "present"; else echo "missing"; fi
-+          } | tee "${RUNNER_TEMP}/artifacts/out/build-summary.txt"
-+          exit 0
-+      - name: Upload artifacts
-+        if: ${{ always() }}
-+        uses: actions/upload-artifact@v6
-+        with:
-+          name: full-passive-diagnostics-kernel
-+          path: ${{ runner.temp }}/artifacts/out
-+          if-no-files-found: warn
+          if [ "$ACTUAL_SHA" != "$BASELINE_COMMIT" ]; then
+            echo "ERROR: baseline commit mismatch" >&2
+            exit 1
+          fi
+
+      - name: Verify build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH="build-inputs/0001-ps4-display-passive-diagnostics.patch"
+          CONFIG="build-inputs/saved-kernel.config"
+          echo "${PATCH_SHA256}  ${PATCH}" | sha256sum -c -
+          echo "${CONFIG_SHA256}  ${CONFIG}" | sha256sum -c -
+          cp "$PATCH" "${RUNNER_TEMP}/0001-ps4-display-passive-diagnostics.patch"
+          cp "$CONFIG" "${RUNNER_TEMP}/saved-kernel.config"
+
+      - name: Apply patch 0001 only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/linux-src"
+          git apply --check "${RUNNER_TEMP}/0001-ps4-display-passive-diagnostics.patch"
+          git apply "${RUNNER_TEMP}/0001-ps4-display-passive-diagnostics.patch"
+          CHANGED=$(git diff --name-only)
+          echo "$CHANGED" | tee "${RUNNER_TEMP}/artifacts/patch-changed-files.txt"
+          EXPECTED=$'drivers/gpu/drm/amd/amdgpu/atombios_dp.c\ndrivers/gpu/drm/amd/amdgpu/dce_v8_0.c\ndrivers/gpu/drm/amd/amdgpu/ps4_bridge.c'
+          if [ "$CHANGED" != "$EXPECTED" ]; then
+            echo "ERROR: changed files do not match expected set" >&2
+            exit 1
+          fi
+
+      - name: Configure kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/linux-src"
+          mkdir -p "${RUNNER_TEMP}/build"
+          cp "${RUNNER_TEMP}/saved-kernel.config" "${RUNNER_TEMP}/build/.config"
+          make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 olddefconfig 2>&1 | tee "${RUNNER_TEMP}/artifacts/olddefconfig.log"
+          grep -E '^(CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_FULL|CONFIG_PS4|CONFIG_DRM_AMDGPU|CONFIG_RUST|CONFIG_CC_VERSION|CONFIG_PAHOLE|CONFIG_DEBUG_INFO)' "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" || true
+          sha256sum "${RUNNER_TEMP}/build/.config" | tee "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt"
+          cp "${RUNNER_TEMP}/build/.config" "${RUNNER_TEMP}/artifacts/resolved.config"
+          if grep -q '^CONFIG_RUST=y' "${RUNNER_TEMP}/build/.config"; then
+            echo "CONFIG_RUST=y detected; checking host tools..." | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt"
+            if ! command -v rustc >/dev/null 2>&1; then
+              echo "ERROR: CONFIG_RUST=y but rustc not found in PATH" >&2
+              exit 1
+            fi
+            rustc --version | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt"
+            if ! command -v bindgen >/dev/null 2>&1; then
+              echo "ERROR: CONFIG_RUST=y but bindgen not found in PATH" >&2
+              exit 1
+            fi
+            bindgen --version | tee -a "${RUNNER_TEMP}/artifacts/config-key-symbols.txt"
+          fi
+
+      - name: Build bzImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/linux-src"
+          make -C . O="${RUNNER_TEMP}/build" ARCH=x86_64 CC="${LLVM_DIR}/bin/clang" LD="${LLVM_DIR}/bin/ld.lld" AR="${LLVM_DIR}/bin/llvm-ar" NM="${LLVM_DIR}/bin/llvm-nm" OBJCOPY="${LLVM_DIR}/bin/llvm-objcopy" OBJDUMP="${LLVM_DIR}/bin/llvm-objdump" STRIP="${LLVM_DIR}/bin/llvm-strip" LLVM=1 LLVM_IAS=1 -j${JOBS} bzImage 2>&1 | tee "${RUNNER_TEMP}/artifacts/build.log"
+          BUILD="${RUNNER_TEMP}/build"
+          IMAGE="$BUILD/arch/x86/boot/bzImage"
+          if [[ ! -s "$IMAGE" ]]; then
+            echo "::error::Kernel image is missing or empty: $IMAGE"
+            exit 1
+          fi
+          echo "Validated bzImage: $(stat -c '%s' "$IMAGE") bytes"
+
+      - name: Collect artifacts
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "${RUNNER_TEMP}/artifacts/out"
+          BUILD="${RUNNER_TEMP}/build"
+          if [ -f "$BUILD/arch/x86/boot/bzImage" ]; then
+            cp "$BUILD/arch/x86/boot/bzImage" "${RUNNER_TEMP}/artifacts/out/" || true
+            sha256sum "$BUILD/arch/x86/boot/bzImage" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/bzImage.sha256.txt" || true
+            ls -lh "$BUILD/arch/x86/boot/bzImage" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/bzImage.size.txt" || true
+          else
+            echo "INFO: bzImage not found (build may have failed)" | tee "${RUNNER_TEMP}/artifacts/out/bzImage.missing.txt" || true
+          fi
+          if [ -f "$BUILD/vmlinux" ]; then
+            cp "$BUILD/vmlinux" "${RUNNER_TEMP}/artifacts/out/" || true
+            sha256sum "$BUILD/vmlinux" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/vmlinux.sha256.txt" || true
+            ls -lh "$BUILD/vmlinux" 2>/dev/null | tee "${RUNNER_TEMP}/artifacts/out/vmlinux.size.txt" || true
+          fi
+          if [ -f "$BUILD/System.map" ]; then
+            cp "$BUILD/System.map" "${RUNNER_TEMP}/artifacts/out/" || true
+          fi
+          cp "${RUNNER_TEMP}/artifacts/resolved.config" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/build.log" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/olddefconfig.log" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/system-*" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/llvm-*" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/source-commit.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/patch-changed-files.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/config-key-symbols.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          cp "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt" "${RUNNER_TEMP}/artifacts/out/" 2>/dev/null || true
+          {
+            echo "=== Summary ==="
+            echo "Source repo: $KERNEL_REPO"
+            echo "Baseline commit: $BASELINE_COMMIT"
+            echo "Patch: build-inputs/0001-ps4-display-passive-diagnostics.patch (sha256: $PATCH_SHA256)"
+            echo "Config: build-inputs/saved-kernel.config (sha256: $CONFIG_SHA256)"
+            echo "LLVM: $LLVM_VERSION (archive sha256: $LLVM_ARCHIVE_SHA256)"
+            echo "Compiler:"
+            cat "${RUNNER_TEMP}/artifacts/llvm-clang-version.txt" 2>/dev/null || echo "(not available)"
+            cat "${RUNNER_TEMP}/artifacts/llvm-lld-version.txt" 2>/dev/null || echo "(not available)"
+            echo "kernelrelease:"
+            (cd "$BUILD" 2>/dev/null && make kernelrelease 2>/dev/null) || echo "(not available)"
+            echo "Resolved .config sha256:"
+            cat "${RUNNER_TEMP}/artifacts/resolved-config-sha256.txt" 2>/dev/null || echo "(not available)"
+            echo "bzImage status:"
+            if [ -f "${RUNNER_TEMP}/artifacts/out/bzImage" ]; then echo "present"; else echo "missing"; fi
+            echo "vmlinux status:"
+            if [ -f "${RUNNER_TEMP}/artifacts/out/vmlinux" ]; then echo "present"; else echo "missing"; fi
+          } | tee "${RUNNER_TEMP}/artifacts/out/build-summary.txt"
+          exit 0
+
+      - name: Upload artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: full-passive-diagnostics-kernel
+          path: ${{ runner.temp }}/artifacts/out
+          if-no-files-found: warn

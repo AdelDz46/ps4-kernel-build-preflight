@@ -59,13 +59,23 @@ jobs:
         run: |
           set -euo pipefail
           cd "${RUNNER_TEMP}"
-          LLVM_TAR="clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-          LLVM_URL="${LLVM_BASE_URL}/${LLVM_TAR}"
-          wget -O "$LLVM_TAR" "$LLVM_URL"
+          LLVM_TAR="llvm-19.1.7-x86_64.tar.xz"
+          PRIMARY_URL="https://cdn.kernel.org/pub/tools/llvm/files/${LLVM_TAR}"
+          FALLBACK_URL="https://mirrors.edge.kernel.org/pub/tools/llvm/files/${LLVM_TAR}"
+          echo "Downloading LLVM 19.1.7 from ${PRIMARY_URL}..."
+          if ! curl -4 -fsSL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 -o "$LLVM_TAR" "$PRIMARY_URL"; then
+            echo "Primary download failed, trying fallback..."
+            curl -4 -fsSL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 -o "$LLVM_TAR" "$FALLBACK_URL"
+          fi
           echo "${LLVM_ARCHIVE_SHA256}  ${LLVM_TAR}" | sha256sum -c -
           mkdir -p "${RUNNER_TEMP}/llvm"
           tar -xJf "$LLVM_TAR" -C "${RUNNER_TEMP}/llvm"
-          LLVM_DIR="$(find "${RUNNER_TEMP}/llvm" -maxdepth 1 -type d -name 'clang+llvm-19.1.7*' | head -n1)"
+          LLVM_DIR="$(find "${RUNNER_TEMP}/llvm" -maxdepth 1 -type d -name 'llvm-19.1.7*' -o -type d -name 'clang+llvm-19.1.7*' | head -n1)"
+          if [ -z "$LLVM_DIR" ] || [ ! -x "$LLVM_DIR/bin/clang" ] || [ ! -x "$LLVM_DIR/bin/ld.lld" ]; then
+            echo "ERROR: LLVM toolchain not found or missing clang/ld.lld" >&2
+            find "${RUNNER_TEMP}/llvm" -maxdepth 2 -name clang -o -name ld.lld | head -10 >&2
+            exit 1
+          fi
           echo "LLVM_DIR=$LLVM_DIR" >> "$GITHUB_ENV"
           echo "PATH=$LLVM_DIR/bin:$PATH" >> "$GITHUB_ENV"
           "$LLVM_DIR/bin/clang" --version | tee "${RUNNER_TEMP}/artifacts/llvm-clang-version.txt"

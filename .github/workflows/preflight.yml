@@ -1,0 +1,53 @@
+
+name: Free Kernel Build Resource Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Inspect available build resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Architecture and CPU ==="
+          uname -m
+          nproc
+
+          echo
+          echo "=== Memory and swap ==="
+          free -h
+
+          echo
+          echo "=== Root filesystem capacity ==="
+          df -hT /
+          df -B1 --output=size,used,avail /
+
+          echo
+          echo "=== Temporary and workspace filesystems ==="
+          df -hT "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+
+          echo
+          echo "=== Available compiler tools ==="
+          if command -v clang >/dev/null 2>&1; then
+            clang --version | head -n 1
+          else
+            echo "Clang not found"
+          fi
+
+          if command -v ld.lld >/dev/null 2>&1; then
+            ld.lld --version | head -n 1
+          else
+            echo "LLD not found"
+          fi
+
+          echo
+          echo "=== Preflight complete; no build performed ==="

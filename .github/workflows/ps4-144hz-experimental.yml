@@ -15,8 +15,8 @@ jobs:
       KERNEL_REPO: https://github.com/feeRnt/ps4-linux-12xx
       KERNEL_COMMIT: e155734653784d5be2495a4c5d6b00f5c4c4db5a
       PATCH_DIR: build-inputs/144hz-experimental
-       PATCH_FILE: 0011-ps4-144hz-experimental-feeRnt-full-v2.patch
-       PATCH_SHA256: 68ed76eac1b0eaf9b37c79d3570fe521fcafc98847eec9d3283cfc181f399a8c
+      PATCH_FILE: 0011-ps4-144hz-experimental-feeRnt-full-v2.patch
+      PATCH_SHA256: 68ed76eac1b0eaf9b37c79d3570fe521fcafc98847eec9d3283cfc181f399a8c
     steps:
       - name: Checkout build repo
         uses: actions/checkout@v4

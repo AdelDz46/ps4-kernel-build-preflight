@@ -80,29 +80,58 @@ jobs:
           fi
           make olddefconfig
 
+      - name: Check firmware requirements
+        run: |
+          cd kernel-src
+          FWLIST=$(grep CONFIG_EXTRA_FIRMWARE .config | cut -d'"' -f2)
+          FWDIR=$(grep CONFIG_EXTRA_FIRMWARE_DIR .config | cut -d'"' -f2)
+          echo "FWDIR=$FWDIR"
+          echo "FWLIST=$FWLIST"
+          MISSING=0
+          for f in $FWLIST; do
+            if [ ! -f "../$FWDIR/$f" ] && [ ! -f "$FWDIR/$f" ]; then
+              echo "MISSING_FIRMWARE: $f (expected in ../$FWDIR or $FWDIR)" >&2
+              MISSING=1
+            else
+              echo "OK: $f"
+            fi
+          done
+          if [ $MISSING -eq 1 ]; then
+            echo "FIRMWARE_CHECK_FAILED" >&2
+            exit 1
+          fi
+
       - name: Build kernel
         run: |
+          set -euo pipefail
           cd kernel-src
           nproc
           make -j$(nproc) LLVM=1 CC=clang AR=llvm-ar NM=llvm-nm LD=ld.lld HOSTCC=clang HOSTCXX=clang++ bzImage 2>&1 | tee ../build.log
 
       - name: Prepare artifacts
+        if: always()
         run: |
+          set -e
           mkdir -p artifacts
-          find kernel-src/arch/x86/boot -name 'bzImage' -exec cp {} artifacts/ps4-144hz-experimental-bzImage \;
-          cp kernel-src/.config artifacts/config
-          cp build.log artifacts/build.log
-          cp patch-applied-files.txt artifacts/patch-applied-files.txt
+          if [ -f "kernel-src/arch/x86/boot/bzImage" ]; then
+            cp kernel-src/arch/x86/boot/bzImage artifacts/ps4-144hz-experimental-bzImage
+            sha256sum artifacts/ps4-144hz-experimental-bzImage >> artifacts/build-metadata.txt
+          else
+            echo "NO_BZIMAGE_PRODUCED" >> artifacts/build-status.txt
+          fi
+          cp kernel-src/.config artifacts/config 2>/dev/null || true
+          cp build.log artifacts/build.log 2>/dev/null || true
+          cp patch-applied-files.txt artifacts/patch-applied-files.txt 2>/dev/null || true
           if [ -f "$PATCH_DIR/patch_hashes.txt" ]; then cp $PATCH_DIR/patch_hashes.txt artifacts/patch_hashes.txt; fi
           if [ -f "$PATCH_DIR/PORT_SUMMARY.md" ]; then cp $PATCH_DIR/PORT_SUMMARY.md artifacts/PORT_SUMMARY.md; fi
           echo "KERNEL_COMMIT=$KERNEL_COMMIT" > artifacts/build-metadata.txt
-          echo "KERNEL_SHA=$KERNEL_SHA" >> artifacts/build-metadata.txt
-          sha256sum artifacts/ps4-144hz-experimental-bzImage >> artifacts/build-metadata.txt
-          sha256sum artifacts/config >> artifacts/build-metadata.txt
+          echo "KERNEL_SHA=${KERNEL_SHA:-unknown}" >> artifacts/build-metadata.txt
+          sha256sum artifacts/config >> artifacts/build-metadata.txt 2>/dev/null || true
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ps4-144hz-experimental
           path: artifacts/
-          if-no-files-found: error
+          if-no-files-found: warn

@@ -78,20 +78,37 @@ jobs:
             echo "ERROR: No PS4 kernel config found in build inputs" >&2
             exit 1
           fi
+          FW_DIR="$(realpath "$GITHUB_WORKSPACE/build-inputs/firmware")"
+          if [ ! -d "$FW_DIR" ]; then
+            echo "ERROR: firmware directory not found: $FW_DIR" >&2
+            exit 1
+          fi
+          scripts/config --file .config --set-str EXTRA_FIRMWARE_DIR "$FW_DIR"
           make olddefconfig
+          RESOLVED=$(grep CONFIG_EXTRA_FIRMWARE_DIR .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "RESOLVED_EXTRA_FIRMWARE_DIR=$RESOLVED"
+          if [ "$RESOLVED" != "$FW_DIR" ]; then
+            echo "ERROR: CONFIG_EXTRA_FIRMWARE_DIR mismatch: got $RESOLVED expected $FW_DIR" >&2
+            exit 1
+          fi
 
       - name: Check firmware requirements
         run: |
           cd kernel-src
-          FWLIST=$(grep CONFIG_EXTRA_FIRMWARE .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          FWDIR=$(grep CONFIG_EXTRA_FIRMWARE_DIR .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          FWLIST=$(grep '^CONFIG_EXTRA_FIRMWARE=' .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          FWDIR=$(grep '^CONFIG_EXTRA_FIRMWARE_DIR=' .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "FWDIR=$FWDIR"
           echo "FWLIST=$FWLIST"
+          if [ ! -d "$FWDIR" ]; then
+            echo "MISSING_FIRMWARE_DIR: $FWDIR" >&2
+            exit 1
+          fi
           MISSING=0
           for f in $FWLIST; do
             [ -z "$f" ] && continue
-            if [ -f "../$FWDIR/$f" ] || [ -f "$FWDIR/$f" ]; then
+            if [ -f "$FWDIR/$f" ]; then
               echo "OK: $f"
+              sha256sum "$FWDIR/$f"
             else
               echo "MISSING_FIRMWARE: $f" >&2
               MISSING=1
@@ -113,6 +130,8 @@ jobs:
         run: |
           set -e
           mkdir -p artifacts
+          echo "KERNEL_COMMIT=$KERNEL_COMMIT" > artifacts/build-metadata.txt
+          echo "KERNEL_SHA=${KERNEL_SHA:-unknown}" >> artifacts/build-metadata.txt
           if [ -f "kernel-src/arch/x86/boot/bzImage" ]; then
             cp kernel-src/arch/x86/boot/bzImage artifacts/ps4-144hz-experimental-bzImage
             sha256sum artifacts/ps4-144hz-experimental-bzImage >> artifacts/build-metadata.txt
@@ -124,8 +143,6 @@ jobs:
           cp patch-applied-files.txt artifacts/patch-applied-files.txt 2>/dev/null || true
           if [ -f "$PATCH_DIR/patch_hashes.txt" ]; then cp $PATCH_DIR/patch_hashes.txt artifacts/patch_hashes.txt; fi
           if [ -f "$PATCH_DIR/PORT_SUMMARY.md" ]; then cp $PATCH_DIR/PORT_SUMMARY.md artifacts/PORT_SUMMARY.md; fi
-          echo "KERNEL_COMMIT=$KERNEL_COMMIT" > artifacts/build-metadata.txt
-          echo "KERNEL_SHA=${KERNEL_SHA:-unknown}" >> artifacts/build-metadata.txt
           sha256sum artifacts/config >> artifacts/build-metadata.txt 2>/dev/null || true
 
       - name: Upload artifacts

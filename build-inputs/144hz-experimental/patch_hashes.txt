@@ -2,3 +2,4 @@
 0006-add-1080p60-120-144-modes-together.patch 5951c3d0bc0d63eadd5076bec0c793f5d7729de9b3b5e046a308157604fd0811
 0007-clobber-dp-extclk-pll-pick-debug.patch c2bc919becb661b11da3c1693ec09353534da7349c6fc0f58fcd0b105a6b89ef
 0008-apu-clock-path-dp-extclk-dpclock-floor.patch 3e8ae3e6c80b2bd7c75e60ed56780b6f94795703dced996824eb0cd2c7a00507
+0010-ps4-144hz-experimental-feeRnt-full-verified.patch d1e7adcfcae41246b2a3673a01cb5d373c1548e4e9f9f3c758c94974028ffce6

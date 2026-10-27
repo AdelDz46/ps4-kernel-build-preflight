@@ -15,6 +15,8 @@ jobs:
       KERNEL_REPO: https://github.com/feeRnt/ps4-linux-12xx
       KERNEL_COMMIT: e155734653784d5be2495a4c5d6b00f5c4c4db5a
       PATCH_DIR: build-inputs/144hz-experimental
+      PATCH_FILE: 0010-ps4-144hz-experimental-feeRnt-full-verified.patch
+      PATCH_SHA256: d1e7adcfcae41246b2a3673a01cb5d373c1548e4e9f9f3c758c94974028ffce6
     steps:
       - name: Checkout build repo
         uses: actions/checkout@v4
@@ -42,22 +44,39 @@ jobs:
       - name: Apply experimental patch series
         run: |
           cd kernel-src
-          cp ../$PATCH_DIR/ps4_bridge_diag.h drivers/gpu/drm/amd/amdgpu/ || true
-          for p in ../$PATCH_DIR/000*.patch; do
-            echo "Applying $(basename $p)"
-            git apply --check "$p" || { echo "CHECK_FAILED $p"; exit 1; }
-            git apply "$p" || { echo "APPLY_FAILED $p"; exit 1; }
-          done
+          mkdir -p drivers/gpu/drm/amd/amdgpu
+          if [ -f "../$PATCH_DIR/ps4_bridge_diag.h" ]; then
+            cp ../$PATCH_DIR/ps4_bridge_diag.h drivers/gpu/drm/amd/amdgpu/
+          else
+            echo "ERROR: Missing required ps4_bridge_diag.h in $PATCH_DIR" >&2
+            exit 1
+          fi
+          PATCH="../$PATCH_DIR/$PATCH_FILE"
+          if [ ! -f "$PATCH" ]; then
+            echo "ERROR: Missing required patch $PATCH" >&2
+            exit 1
+          fi
+          ACTUAL_SHA=$(sha256sum "$PATCH" | awk '{print $1}')
+          if [ "$ACTUAL_SHA" != "$PATCH_SHA256" ]; then
+            echo "ERROR: Patch SHA256 mismatch: got $ACTUAL_SHA expected $PATCH_SHA256" >&2
+            exit 1
+          fi
+          echo "Applying $(basename $PATCH) (sha256 $ACTUAL_SHA)"
+          git apply --check "$PATCH" || { echo "CHECK_FAILED $PATCH"; exit 1; }
+          git apply "$PATCH" || { echo "APPLY_FAILED $PATCH"; exit 1; }
           echo "PATCHES_OK=1" >> $GITHUB_ENV
           git diff --name-only | tee ../patch-applied-files.txt
 
       - name: Prepare config
         run: |
           cd kernel-src
-          if [ -f "../$PATCH_DIR/../saved-kernel.config" ]; then
+          if [ -f "../build-inputs/saved-kernel.config" ]; then
             cp ../build-inputs/saved-kernel.config .config
+          elif [ -f "../$PATCH_DIR/saved-kernel.config" ]; then
+            cp ../$PATCH_DIR/saved-kernel.config .config
           else
-            make defconfig
+            echo "ERROR: No PS4 kernel config found in build inputs" >&2
+            exit 1
           fi
           make olddefconfig
 
@@ -74,8 +93,8 @@ jobs:
           cp kernel-src/.config artifacts/config
           cp build.log artifacts/build.log
           cp patch-applied-files.txt artifacts/patch-applied-files.txt
-          cp $PATCH_DIR/patch_hashes.txt artifacts/patch_hashes.txt
-          cp $PATCH_DIR/PORT_SUMMARY.md artifacts/PORT_SUMMARY.md
+          if [ -f "$PATCH_DIR/patch_hashes.txt" ]; then cp $PATCH_DIR/patch_hashes.txt artifacts/patch_hashes.txt; fi
+          if [ -f "$PATCH_DIR/PORT_SUMMARY.md" ]; then cp $PATCH_DIR/PORT_SUMMARY.md artifacts/PORT_SUMMARY.md; fi
           echo "KERNEL_COMMIT=$KERNEL_COMMIT" > artifacts/build-metadata.txt
           echo "KERNEL_SHA=$KERNEL_SHA" >> artifacts/build-metadata.txt
           sha256sum artifacts/ps4-144hz-experimental-bzImage >> artifacts/build-metadata.txt

@@ -6,3 +6,9 @@ Changed files: amdgpu_atombios.c, atombios_crtc.c, atombios_encoders.c, dce_v8_0
 
 Patches ported: 0005-0008 with manifests in patch_hashes.txt
 Includes: 1080p60/120/144 modes, non_cea_mode, dp_extclk clobber (Gladius+Liverpool), dp_clock floor, diagnostics, TX controls preserved.
+
+## Active consolidated patch (verified)
+- Patch: 0010-ps4-144hz-experimental-feeRnt-full-verified.patch
+- SHA256: d1e7adcfcae41246b2a3673a01cb5d373c1548e4e9f9f3c758c94974028ffce6
+- Baseline commit: e155734653784d5be2495a4c5d6b00f5c4c4db5a (feeRnt/ps4-linux-12xx)
+- Status: Verified by local exact-base test (git apply --check/apply/diff --check). Hardware output on PS4 Pro remains unverified.

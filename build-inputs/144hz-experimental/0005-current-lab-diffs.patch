@@ -1,0 +1,184 @@
+diff --git a/drivers/gpu/drm/amd/amdgpu/atombios_crtc.c b/drivers/gpu/drm/amd/amdgpu/atombios_crtc.c
+index 3dfc28840..d26752c7f 100644
+--- a/drivers/gpu/drm/amd/amdgpu/atombios_crtc.c
++++ b/drivers/gpu/drm/amd/amdgpu/atombios_crtc.c
+@@ -34,6 +34,7 @@
+ #include "amdgpu_atombios.h"
+ #include "amdgpu_pll.h"
+ #include "amdgpu_connectors.h"
++#include "ps4_bridge_diag.h"
+ 
+ void amdgpu_atombios_crtc_overscan_setup(struct drm_crtc *crtc,
+ 				  struct drm_display_mode *mode,
+@@ -427,8 +428,16 @@ static u32 amdgpu_atombios_crtc_adjust_pll(struct drm_crtc *crtc,
+ 			else
+ 				args.v3.sInput.ucExtTransmitterID = 0;
+ 
++			if (connector && ENCODER_MODE_IS_DP(encoder_mode) &&
++			    (adev->asic_type == CHIP_LIVERPOOL ||
++			     adev->asic_type == CHIP_GLADIUS))
++				ps4_bridge_probe_lane_status(connector, "before-adjust-display-pll");
+ 			amdgpu_atom_execute_table(adev->mode_info.atom_context,
+ 					   index, (uint32_t *)&args, sizeof(args));
++			if (connector && ENCODER_MODE_IS_DP(encoder_mode) &&
++			    (adev->asic_type == CHIP_LIVERPOOL ||
++			     adev->asic_type == CHIP_GLADIUS))
++				ps4_bridge_probe_lane_status(connector, "after-adjust-display-pll");
+ 			adjusted_clock = le32_to_cpu(args.v3.sOutput.ulDispPllFreq) * 10;
+ 			if (args.v3.sOutput.ucRefDiv) {
+ 				amdgpu_crtc->pll_flags |= AMDGPU_PLL_USE_FRAC_FB_DIV;
+diff --git a/drivers/gpu/drm/amd/amdgpu/atombios_encoders.c b/drivers/gpu/drm/amd/amdgpu/atombios_encoders.c
+index 78aa730fb..d8245451d 100644
+--- a/drivers/gpu/drm/amd/amdgpu/atombios_encoders.c
++++ b/drivers/gpu/drm/amd/amdgpu/atombios_encoders.c
+@@ -25,6 +25,7 @@
+  */
+ 
+ #include <linux/pci.h>
++#include <linux/moduleparam.h>
+ 
+ #include <acpi/video.h>
+ 
+@@ -35,10 +36,27 @@
+ #include "amdgpu_display.h"
+ #include "atom.h"
+ #include "atombios_encoders.h"
++#include "ps4_bridge_diag.h"
+ #include "atombios_dp.h"
+ #include <linux/backlight.h>
+ #include "bif/bif_4_1_d.h"
+ 
++/* Experimental, opt-in controls for the PS4's firmware-trained DP link. */
++static bool ps4_skip_tx_disable;
++module_param_named(ps4_skip_tx_disable, ps4_skip_tx_disable, bool, 0644);
++MODULE_PARM_DESC(ps4_skip_tx_disable,
++	"Skip DIG TX DISABLE on the PS4 internal DP path (experimental)");
++
++static bool ps4_skip_tx_enable;
++module_param_named(ps4_skip_tx_enable, ps4_skip_tx_enable, bool, 0644);
++MODULE_PARM_DESC(ps4_skip_tx_enable,
++	"Skip DIG TX ENABLE on the PS4 internal DP path (experimental)");
++
++static bool ps4_bypass_dp_training;
++module_param_named(ps4_bypass_dp_training, ps4_bypass_dp_training, bool, 0644);
++MODULE_PARM_DESC(ps4_bypass_dp_training,
++	"Bypass standard DP link training on the PS4 internal DP path (experimental)");
++
+ u8
+ amdgpu_atombios_encoder_get_backlight_level_from_reg(struct amdgpu_device *adev)
+ {
+@@ -1295,6 +1313,17 @@ amdgpu_atombios_encoder_setup_external_encoder(struct drm_encoder *encoder,
+ 	amdgpu_atom_execute_table(adev->mode_info.atom_context, index, (uint32_t *)&args, sizeof(args));
+ }
+ 
++static bool ps4_is_internal_dp(struct drm_encoder *encoder,
++			       struct drm_connector *connector)
++{
++	struct amdgpu_device *adev = drm_to_adev(encoder->dev);
++
++	return connector &&
++	       (adev->asic_type == CHIP_LIVERPOOL ||
++		adev->asic_type == CHIP_GLADIUS) &&
++	       ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder));
++}
++
+ static void
+ amdgpu_atombios_encoder_setup_dig(struct drm_encoder *encoder, int action)
+ {
+@@ -1333,13 +1362,26 @@ amdgpu_atombios_encoder_setup_dig(struct drm_encoder *encoder, int action)
+ 			}
+ 		}
+ 		/* enable the transmitter */
++		if (connector &&
++		    ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder)) &&
++		    (drm_to_adev(encoder->dev)->asic_type == CHIP_LIVERPOOL ||
++		     drm_to_adev(encoder->dev)->asic_type == CHIP_GLADIUS))
++			ps4_bridge_probe_lane_status(connector, "before-dig-tx-enable");
+ 		amdgpu_atombios_encoder_setup_dig_transmitter(encoder,
+ 						       ATOM_TRANSMITTER_ACTION_ENABLE,
+ 						       0, 0);
++		if (connector &&
++		    ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder)) &&
++		    (drm_to_adev(encoder->dev)->asic_type == CHIP_LIVERPOOL ||
++		     drm_to_adev(encoder->dev)->asic_type == CHIP_GLADIUS))
++			ps4_bridge_probe_lane_status(connector, "after-dig-tx-enable");
+ 		if (ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder)) &&
+ 		    connector) {
+ 			/* DP_SET_POWER_D0 is set in amdgpu_atombios_dp_link_train */
+-			amdgpu_atombios_dp_link_train(encoder, connector);
++			if (ps4_bypass_dp_training && ps4_is_internal_dp(encoder, connector))
++				pr_info("ps4_atom: bypassing PS4 DP link training\n");
++			else
++				amdgpu_atombios_dp_link_train(encoder, connector);
+ 			amdgpu_atombios_encoder_setup_dig_encoder(encoder, ATOM_ENCODER_CMD_DP_VIDEO_ON, 0);
+ 		}
+ 		if (amdgpu_encoder->devices & (ATOM_DEVICE_LCD_SUPPORT))
+@@ -1361,8 +1403,18 @@ amdgpu_atombios_encoder_setup_dig(struct drm_encoder *encoder, int action)
+ 		    connector)
+ 			amdgpu_atombios_dp_set_rx_power_state(connector, DP_SET_POWER_D3);
+ 		/* disable the transmitter */
++		if (connector &&
++		    ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder)) &&
++		    (drm_to_adev(encoder->dev)->asic_type == CHIP_LIVERPOOL ||
++		     drm_to_adev(encoder->dev)->asic_type == CHIP_GLADIUS))
++			ps4_bridge_probe_lane_status(connector, "before-dig-tx-disable");
+ 		amdgpu_atombios_encoder_setup_dig_transmitter(encoder,
+ 						       ATOM_TRANSMITTER_ACTION_DISABLE, 0, 0);
++		if (connector &&
++		    ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder)) &&
++		    (drm_to_adev(encoder->dev)->asic_type == CHIP_LIVERPOOL ||
++		     drm_to_adev(encoder->dev)->asic_type == CHIP_GLADIUS))
++			ps4_bridge_probe_lane_status(connector, "after-dig-tx-disable");
+ 		if (ENCODER_MODE_IS_DP(amdgpu_atombios_encoder_get_encoder_mode(encoder)) &&
+ 		    connector) {
+ 			if (connector->connector_type == DRM_MODE_CONNECTOR_eDP) {
+diff --git a/drivers/gpu/drm/amd/amdgpu/ps4_bridge.c b/drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
+index d9d802e16..cbd09ac7b 100644
+--- a/drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
++++ b/drivers/gpu/drm/amd/amdgpu/ps4_bridge.c
+@@ -44,6 +44,7 @@
+ 
+ 
+ #include "amdgpu.h"
++#include "ps4_bridge_diag.h"
+ #include "amdgpu_mode.h"
+ #include "atombios_dp.h"
+ #include "ObjectID.h"
+@@ -520,10 +521,12 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
+ 		}
+ 		#endif
+ 		mutex_unlock(&mn_bridge->mutex);
++		ps4_bridge_probe_lane_status(connector, "after-mn864729-enable");
+ 	}
+ 	else
+ 	{
+ 		/* Panasonic MN864729 */
++		ps4_bridge_probe_lane_status(connector, "before-mn864729-enable");
+ 		mutex_lock(&mn_bridge->mutex);
+ 		cq_init(&mn_bridge->cq, 4);
+ 		cq_mask(&mn_bridge->cq, 0x6005, 0x01, 0x01);
+@@ -641,6 +644,7 @@ static void ps4_bridge_enable(struct drm_bridge *bridge)
+ 		}
+ 		#endif
+ 		mutex_unlock(&mn_bridge->mutex);
++		ps4_bridge_probe_lane_status(connector, "after-mn864729-enable");
+ 	}
+ 
+ }
+@@ -768,6 +772,16 @@ enum drm_mode_status ps4_bridge_mode_valid(struct drm_connector *connector,
+ 
+ 	/* Allow anything that we can match up to a VIC (CEA modes) */
+ 	if (!vic || (vic != 16 && vic != 4 && vic != 63)) {
++		if (mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
++		    drm_mode_vrefresh(mode) > 120)
++			pr_info_ratelimited("ps4_144hz_probe: rejected %dx%d@%dHz "
++				"clock=%d kHz H=%d/%d/%d/%d V=%d/%d/%d/%d "
++				"flags=0x%x VIC=%d\n",
++				mode->hdisplay, mode->vdisplay, drm_mode_vrefresh(mode),
++				mode->clock, mode->hdisplay, mode->hsync_start,
++				mode->hsync_end, mode->htotal, mode->vdisplay,
++				mode->vsync_start, mode->vsync_end, mode->vtotal,
++				mode->flags, vic);
+ 	// Might need to disable 63 (1920x1080-120Hz)
+ 
+ 	/*

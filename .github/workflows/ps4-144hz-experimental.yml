@@ -1,0 +1,89 @@
+name: PS4 144Hz Experimental (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      KERNEL_REPO: https://github.com/feeRnt/ps4-linux-12xx
+      KERNEL_COMMIT: e155734653784d5be2495a4c5d6b00f5c4c4db5a
+      PATCH_DIR: build-inputs/144hz-experimental
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Show disk space
+        run: df -h
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
+            git wget xz-utils cpio dwarves zstd python3 pahole \
+            llvm lld clang
+
+      - name: Fetch exact pinned kernel source
+        run: |
+          mkdir -p kernel-src
+          cd kernel-src
+          git init
+          git remote add origin "$KERNEL_REPO"
+          git fetch --depth 1 origin "$KERNEL_COMMIT"
+          git checkout "$KERNEL_COMMIT"
+          echo "KERNEL_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Apply experimental patch series
+        run: |
+          cd kernel-src
+          cp ../$PATCH_DIR/ps4_bridge_diag.h drivers/gpu/drm/amd/amdgpu/ || true
+          for p in ../$PATCH_DIR/000*.patch; do
+            echo "Applying $(basename $p)"
+            git apply --check "$p" || { echo "CHECK_FAILED $p"; exit 1; }
+            git apply "$p" || { echo "APPLY_FAILED $p"; exit 1; }
+          done
+          echo "PATCHES_OK=1" >> $GITHUB_ENV
+          git diff --name-only | tee ../patch-applied-files.txt
+
+      - name: Prepare config
+        run: |
+          cd kernel-src
+          if [ -f "../$PATCH_DIR/../saved-kernel.config" ]; then
+            cp ../build-inputs/saved-kernel.config .config
+          else
+            make defconfig
+          fi
+          make olddefconfig
+
+      - name: Build kernel
+        run: |
+          cd kernel-src
+          nproc
+          make -j$(nproc) LLVM=1 CC=clang AR=llvm-ar NM=llvm-nm LD=ld.lld HOSTCC=clang HOSTCXX=clang++ bzImage 2>&1 | tee ../build.log
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          find kernel-src/arch/x86/boot -name 'bzImage' -exec cp {} artifacts/ps4-144hz-experimental-bzImage \;
+          cp kernel-src/.config artifacts/config
+          cp build.log artifacts/build.log
+          cp patch-applied-files.txt artifacts/patch-applied-files.txt
+          cp $PATCH_DIR/patch_hashes.txt artifacts/patch_hashes.txt
+          cp $PATCH_DIR/PORT_SUMMARY.md artifacts/PORT_SUMMARY.md
+          echo "KERNEL_COMMIT=$KERNEL_COMMIT" > artifacts/build-metadata.txt
+          echo "KERNEL_SHA=$KERNEL_SHA" >> artifacts/build-metadata.txt
+          sha256sum artifacts/ps4-144hz-experimental-bzImage >> artifacts/build-metadata.txt
+          sha256sum artifacts/config >> artifacts/build-metadata.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps4-144hz-experimental
+          path: artifacts/
+          if-no-files-found: error

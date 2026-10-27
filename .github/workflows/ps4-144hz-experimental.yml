@@ -83,21 +83,21 @@ jobs:
       - name: Check firmware requirements
         run: |
           cd kernel-src
-          FWLIST=$(grep CONFIG_EXTRA_FIRMWARE .config | cut -d'"' -f2)
-          FWDIR=$(grep CONFIG_EXTRA_FIRMWARE_DIR .config | cut -d'"' -f2)
+          FWLIST=$(grep CONFIG_EXTRA_FIRMWARE .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          FWDIR=$(grep CONFIG_EXTRA_FIRMWARE_DIR .config | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "FWDIR=$FWDIR"
           echo "FWLIST=$FWLIST"
           MISSING=0
           for f in $FWLIST; do
-            if [ ! -f "../$FWDIR/$f" ] && [ ! -f "$FWDIR/$f" ]; then
-              echo "MISSING_FIRMWARE: $f (expected in ../$FWDIR or $FWDIR)" >&2
-              MISSING=1
-            else
+            [ -z "$f" ] && continue
+            if [ -f "../$FWDIR/$f" ] || [ -f "$FWDIR/$f" ]; then
               echo "OK: $f"
+            else
+              echo "MISSING_FIRMWARE: $f" >&2
+              MISSING=1
             fi
           done
           if [ $MISSING -eq 1 ]; then
-            echo "FIRMWARE_CHECK_FAILED" >&2
             exit 1
           fi
 

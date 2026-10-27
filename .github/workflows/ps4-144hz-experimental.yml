@@ -44,10 +44,7 @@ jobs:
       - name: Apply experimental patch series
         run: |
           cd kernel-src
-          mkdir -p drivers/gpu/drm/amd/amdgpu
-          if [ -f "../$PATCH_DIR/ps4_bridge_diag.h" ]; then
-            cp ../$PATCH_DIR/ps4_bridge_diag.h drivers/gpu/drm/amd/amdgpu/
-          else
+          if [ ! -f "../$PATCH_DIR/ps4_bridge_diag.h" ]; then
             echo "ERROR: Missing required ps4_bridge_diag.h in $PATCH_DIR" >&2
             exit 1
           fi
@@ -64,6 +61,15 @@ jobs:
           echo "Applying $(basename $PATCH) (sha256 $ACTUAL_SHA)"
           git apply --check "$PATCH" || { echo "CHECK_FAILED $PATCH"; exit 1; }
           git apply "$PATCH" || { echo "APPLY_FAILED $PATCH"; exit 1; }
+          if [ ! -f "drivers/gpu/drm/amd/amdgpu/ps4_bridge_diag.h" ]; then
+            echo "ERROR: Patch did not create ps4_bridge_diag.h" >&2
+            exit 1
+          fi
+          if ! cmp -s "../$PATCH_DIR/ps4_bridge_diag.h" "drivers/gpu/drm/amd/amdgpu/ps4_bridge_diag.h"; then
+            echo "ERROR: Patched ps4_bridge_diag.h differs from staged header" >&2
+            exit 1
+          fi
+          git diff --check
           echo "PATCHES_OK=1" >> $GITHUB_ENV
           git diff --name-only | tee ../patch-applied-files.txt
 
